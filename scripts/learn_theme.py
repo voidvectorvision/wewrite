@@ -5,12 +5,15 @@ Usage:
     python3 scripts/learn_theme.py --file <path>  # analyse a saved HTML file
 """
 
+import argparse
 import colorsys
 import re
 import sys
 from collections import Counter
+from pathlib import Path
 
 import requests
+import yaml
 from bs4 import BeautifulSoup
 
 # ---------------------------------------------------------------------------
@@ -156,6 +159,9 @@ _BROWSER_UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
+
+TEMPLATE_THEME = "professional-clean"
+THEMES_DIR = Path(__file__).resolve().parent.parent / "toolkit" / "themes"
 
 
 def _attach_title(soup, content) -> None:
@@ -438,6 +444,131 @@ def analyze_styles(grouped: dict) -> dict:
         result["border_radius"] = Counter(all_radii).most_common(1)[0][0]
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# 4. Theme YAML generation
+# ---------------------------------------------------------------------------
+
+def _load_template_css() -> str:
+    """Load the base_css from the professional-clean template theme."""
+    template_path = THEMES_DIR / f"{TEMPLATE_THEME}.yaml"
+    with open(template_path, encoding="utf-8") as fh:
+        data = yaml.safe_load(fh)
+    return data["base_css"]
+
+
+def generate_theme_yaml(name: str, title: str, analyzed: dict) -> str:
+    """Generate a complete theme YAML string from analyzed style properties.
+
+    Parameters
+    ----------
+    name:     Theme identifier (used as filename and --theme reference).
+    title:    Article title (used in description).
+    analyzed: Dict returned by :func:`analyze_styles`.
+    """
+    css = _load_template_css()
+
+    # Build colors dict
+    colors = {
+        "primary":      analyzed.get("primary", "#2563eb"),
+        "secondary":    analyzed.get("secondary", "#3b82f6"),
+        "text":         analyzed.get("text", "#333333"),
+        "text_light":   analyzed.get("text_light", "#666666"),
+        "background":   analyzed.get("background", "#ffffff"),
+        "code_bg":      analyzed.get("code_bg", "#1e293b"),
+        "code_color":   analyzed.get("code_color", "#e2e8f0"),
+        "quote_border": analyzed.get("quote_border", "#2563eb"),
+        "quote_bg":     analyzed.get("quote_bg", "#eff6ff"),
+        "border_radius": analyzed.get("border_radius", "8px"),
+    }
+
+    # Replace template colors in CSS
+    css = css.replace("#2563eb", colors["primary"])
+    css = css.replace("#3b82f6", colors["secondary"])
+    css = css.replace("#333333", colors["text"])
+    css = css.replace("#666666", colors["text_light"])
+    css = css.replace("#1e293b", colors["code_bg"])
+    css = css.replace("#e2e8f0", colors["code_color"])
+    css = css.replace("#eff6ff", colors["quote_bg"])
+
+    # Replace typography via regex
+    font_size   = analyzed.get("font_size", "16px")
+    line_height = analyzed.get("line_height", "1.8")
+    font_family = analyzed.get("font_family",
+        '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, '
+        '"Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", '
+        '"Microsoft YaHei", sans-serif')
+    p_margin    = analyzed.get("p_margin", "12px 0")
+    border_radius = colors["border_radius"]
+
+    # body font-size
+    css = re.sub(
+        r"(body\s*\{[^}]*font-size:\s*)[\d.]+px",
+        lambda m: m.group(1) + font_size,
+        css,
+        flags=re.DOTALL,
+    )
+    # body line-height
+    css = re.sub(
+        r"(body\s*\{[^}]*line-height:\s*)[\d.]+",
+        lambda m: m.group(1) + line_height,
+        css,
+        flags=re.DOTALL,
+    )
+    # body font-family (replace the quoted chain)
+    css = re.sub(
+        r'(body\s*\{[^}]*font-family:\s*)[^;]+;',
+        lambda m: m.group(1) + font_family + ";",
+        css,
+        flags=re.DOTALL,
+    )
+    # p line-height
+    css = re.sub(
+        r'(p\s*\{[^}]*line-height:\s*)[\d.]+',
+        lambda m: m.group(1) + line_height,
+        css,
+        flags=re.DOTALL,
+    )
+    # p margin
+    css = re.sub(
+        r'(p\s*\{[^}]*margin:\s*)[^;]+;',
+        lambda m: m.group(1) + p_margin + ";",
+        css,
+        flags=re.DOTALL,
+    )
+    # li line-height (match p line-height)
+    css = re.sub(
+        r'(li\s*\{[^}]*line-height:\s*)[\d.]+',
+        lambda m: m.group(1) + line_height,
+        css,
+        flags=re.DOTALL,
+    )
+    # border-radius: 8px and border-radius: 4px
+    css = css.replace("border-radius: 8px", f"border-radius: {border_radius}")
+    css = css.replace("border-radius: 4px", f"border-radius: {border_radius}")
+
+    # Derive dark mode
+    darkmode = derive_darkmode(colors)
+
+    # Description
+    if title:
+        description = f"从「{title}」学习的排版主题"
+    else:
+        description = f"Learned theme: {name}"
+
+    # Build theme data
+    colors_with_dark = dict(colors)
+    colors_with_dark["darkmode"] = darkmode
+
+    theme_data = {
+        "name":        name,
+        "description": description,
+        "colors":      colors_with_dark,
+        "base_css":    css,
+    }
+
+    return yaml.dump(theme_data, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
 
 # ---------------------------------------------------------------------------
